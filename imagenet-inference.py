@@ -1,20 +1,84 @@
 ### YOUR CODE HERE
 import numpy as np
 import torch
+import torch.onnx
 import torch.nn as nn
 import torch.nn.functional as F
 from torchvision import datasets, transforms, models
-from tqdm import tqdm, trange
+from tqdm import tqdm
+from torchinfo import summary
 
-# Count trainable parameters function
+
+
+# Function to calculate top-1 and top-5 accuracy
+def accuracy(output: torch.Tensor, target: torch.Tensor, topk=(1,)):
+  """
+  Computes the accuracy over the k top predictions for the specified values of k
+  In top-5 accuracy you give yourself credit for having the right answer
+  if the right answer appears in your top five guesses.
+
+  ref:
+  - https://pytorch.org/docs/stable/generated/torch.topk.html
+  - https://discuss.pytorch.org/t/imagenet-example-accuracy-calculation/7840
+  - https://gist.github.com/weiaicunzai/2a5ae6eac6712c70bde0630f3e76b77b
+  - https://discuss.pytorch.org/t/top-k-error-calculation/48815/2
+  - https://stackoverflow.com/questions/59474987/how-to-get-top-k-accuracy-in-semantic-segmentation-using-pytorch
+
+  :param output: output is the prediction of the model e.g. scores, logits, raw y_pred before normalization or getting classes
+  :param target: target is the truth
+  :param topk: tuple of topk's to compute e.g. (1, 2, 5) computes top 1, top 2 and top 5.
+  e.g. in top 2 it means you get a +1 if your models's top 2 predictions are in the right label.
+  So if your model predicts cat, dog (0, 1) and the true label was bird (3) you get zero
+  but if it were either cat or dog you'd accumulate +1 for that example.
+  :return: list of topk accuracy [top1st, top2nd, ...] depending on your topk input
+  """
+  with torch.no_grad():
+      # ---- get the topk most likely labels according to your model
+      # get the largest k \in [n_classes] (i.e. the number of most likely probabilities we will use)
+      maxk = max(topk)  # max number labels we will consider in the right choices for out model
+      batch_size = target.size(0)
+
+      # get top maxk indicies that correspond to the most likely probability scores
+      # (note _ means we don't care about the actual top maxk scores just their corresponding indicies/labels)
+      _, y_pred = output.topk(k=maxk, dim=1)  # _, [B, n_classes] -> [B, maxk]
+      y_pred = y_pred.t()  # [B, maxk] -> [maxk, B] Expects input to be <= 2-D tensor and transposes dimensions 0 and 1.
+
+      # - get the credit for each example if the models predictions is in maxk values (main crux of code)
+      # for any example, the model will get credit if it's prediction matches the ground truth
+      # for each example we compare if the model's best prediction matches the truth. If yes we get an entry of 1.
+      # if the k'th top answer of the model matches the truth we get 1.
+      # Note: this for any example in batch we can only ever get 1 match (so we never overestimate accuracy <1)
+      target_reshaped = target.view(1, -1).expand_as(y_pred)  # [B] -> [B, 1] -> [maxk, B]
+      # compare every topk's model prediction with the ground truth & give credit if any matches the ground truth
+      correct = (y_pred == target_reshaped)  # [maxk, B] were for each example we know which topk prediction matched truth
+      # original: correct = pred.eq(target.view(1, -1).expand_as(pred))
+
+      # -- get topk accuracy
+      list_topk_accs = []  # idx is topk1, topk2, ... etc
+      for k in topk:
+          # get tensor of which topk answer was right
+          ind_which_topk_matched_truth = correct[:k]  # [maxk, B] -> [k, B]
+          # flatten it to help compute if we got it correct for each example in batch
+          flattened_indicator_which_topk_matched_truth = ind_which_topk_matched_truth.reshape(-1).float()  # [k, B] -> [kB]
+          # get if we got it right for any of our top k prediction for each example in batch
+          tot_correct_topk = flattened_indicator_which_topk_matched_truth.float().sum(dim=0, keepdim=True)  # [kB] -> [1]
+          # compute topk accuracy - the accuracy of the mode's ability to get it right within it's top k guesses/preds
+          topk_acc = tot_correct_topk / batch_size  # topk accuracy for entire batch
+          list_topk_accs.append(topk_acc)
+      return list_topk_accs  # list of topk accuracies for entire batch [topk1, topk2, ... etc]
+
+# Function to count trainable parameters function
 def count_parameters(model):
   return sum(p.numel() for p in model.parameters() if p.requires_grad)
 
-# Select device
+
+
+# Select GPU if available
 device = torch.device('cuda' if torch.cuda.is_available() else 'cpu')
 
-# Pre-processing
-from torchvision import transforms
+
+
+# Input image pre-processing
 transform = transforms.Compose([             #[1]
   transforms.Resize(256),                    #[2]
   transforms.CenterCrop(224),                #[3]
@@ -24,44 +88,78 @@ transform = transforms.Compose([             #[1]
   std=[0.229, 0.224, 0.225]                  #[7]
   )])
 
+
+
 # Load the data
 imagenet_val = datasets.ImageFolder('/mnt/terabyte/datasets/ImageNet/val/' , transform=transform)
-val_loader = torch.utils.data.DataLoader(imagenet_val, batch_size=100, shuffle=False)
-    
+val_loader = torch.utils.data.DataLoader(imagenet_val, batch_size=1, shuffle=False)
+
+
+
 # Load the pretrained network
 model = models.shufflenet_v2_x1_0(pretrained=True)
 model.eval()
 model.to(device)
+
+
+
+# Convert to onnx format
+if 0:
+  dummy_input = torch.randn(1, 3, 224, 224)
+  dummy_input = dummy_input.to(device)
+  input_names = [ "actual_input" ]
+  output_names = [ "output" ]
+  torch.onnx.export(model, 
+    dummy_input,
+    "./onnx/shufflenet_v2_x1.onnx",
+    verbose=False,
+    input_names=input_names,
+    output_names=output_names,
+    export_params=True)
+
+
+
+# Print model and its summary
 print(model)
+summary(model,
+  verbose=1,
+  depth=5,
+  input_size=(1,3,224,224),
+  col_names=["kernel_size", "input_size", "output_size", "num_params", "mult_adds"])
+
+
 
 # Print parameters
-max_param_sz = 0
-for name, param in model.named_parameters():
-  if param.requires_grad:
-    #max_param_sz = max(max_param_sz, param.data.size)
-    print(param.data.size())
-#       print(name, param.data)
-print("Max parameter size:", max_param_sz)
-print("Trainable parameters:", count_parameters(model))
+# max_param_sz = 0
+# for name, param in model.named_parameters():
+#   if param.requires_grad:
+#     max_param_sz = max(max_param_sz, param.data.size)
+#     print(param.data.size())
+#     print(name, param.data)
+# print("Max parameter size:", max_param_sz)
+# print("Trainable parameters:", count_parameters(model))
 
-## Testing
-correct = 0
-total = len(imagenet_val)
-print("Total validation images:", total)
 
-with torch.no_grad():
-  # Iterate through test set minibatchs 
-  for images, labels in tqdm(val_loader):
-    images, labels = images.to(device), labels.to(device)
 
-    # Forward pass
-    x = images
-    y = model(x)
-    
-    predictions = torch.argmax(y, dim=1)
-    correct += torch.sum((predictions == labels).float())
+# Benchmark top-1 and top-5 accuracy
+if 0:
+  correct1 = 0
+  correct5 = 0
+  total = len(imagenet_val)
+  print("Total validation images:", total)
 
-    
-print('Test accuracy: {}'.format(correct/total))
+  with torch.no_grad():
+    # Iterate through test set minibatchs 
+    for images, labels in tqdm(val_loader):
+      images, labels = images.to(device), labels.to(device)
 
-# Make sure to print out your accuracy on the test set at the end.
+      # Forward pass
+      x = images
+      y = model(x)
+      list = accuracy(y, labels, topk=(1,5))
+      correct1 += float(list[0])
+      correct5 += float(list[1])
+
+      
+  print('Top-1 accuracy: {}'.format(correct1/total))
+  print('Top-5 accuracy: {}'.format(correct5/total))
