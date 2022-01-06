@@ -86,12 +86,12 @@ def get_tensor_dimensions_impl(model, layer, image_size, for_input=False):
 
 # Print arguments and models
 print("Usage:")
-print("python imagenet-inference.py <input-size> <model> <to-onnx> <onnx-name> <model-summary> <activation-size> <accuracy> <speed> <write-parameters>")
+print("python imagenet-inference.py <input-size> <model> <to-onnx> <onnx-name> <model-summary> <activation-size> <accuracy-speed> <write-parameters>")
 print("Example:")
-print("python imagenet-inference.py 224 squeezenet1_1 0 0 1 1 1 1 0")
+print("python imagenet-inference.py 224 squeezenet1_1 0 0 1 1 1 0")
 print("Currently the following models are supported:")
 print("squeezenet1_1, mobilenet_v2, shufflenet_v2_x1_0")
-if len(sys.argv) != 10:
+if len(sys.argv) != 9:
   print("Invalid usage.")
   print("Program will terminate.")
   exit()
@@ -136,7 +136,7 @@ model.to(device)
 
 
 # Convert to onnx format
-if sys.argv[3]:
+if int(sys.argv[3]):
   output_name = sys.argv[4]
   dummy_input = torch.randn(1, 3, input_sz, input_sz)
   dummy_input = dummy_input.to(device)
@@ -152,7 +152,7 @@ if sys.argv[3]:
 
 
 # Print model and its summary
-if sys.argv[5]:
+if int(sys.argv[5]):
   # print(model)
   summary(model,
     verbose=1,
@@ -162,7 +162,7 @@ if sys.argv[5]:
 
 
 # Print total activation size
-if sys.argv[6]:
+if int(sys.argv[6]):
   activation_sz = 0
   for name, layer in model.named_modules():
     #if isinstance(layer, torch.nn.Conv2d):
@@ -172,7 +172,7 @@ if sys.argv[6]:
 
 
 # Benchmark top-1 and top-5 accuracy
-if sys.argv[7]:
+if int(sys.argv[7]):
   correct1 = 0
   correct5 = 0
   total = len(imagenet_val)
@@ -195,24 +195,8 @@ if sys.argv[7]:
   print('Top-5 accuracy: {}'.format(correct5/total))
 
 
-# Benchmark inference speed
-if sys.argv[8]:
-  correct = 0
-  with torch.no_grad():
-    # Iterate through test set minibatchs 
-    for images, labels in tqdm(val_loader):
-      images, labels = images.to(device), labels.to(device)
-
-      # Forward pass
-      x = images
-      y = model(x)
-      
-      predictions = torch.argmax(y, dim=1)
-      correct += torch.sum((predictions == labels).float())
-
-
 # Write parameters to file
-if sys.argv[9]:
+if int(sys.argv[8]):
   for name, param in model.named_parameters():
     if param.requires_grad:
       print(param.data.size())
