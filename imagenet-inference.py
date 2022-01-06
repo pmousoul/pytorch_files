@@ -1,13 +1,13 @@
-### YOUR CODE HERE
+import sys
 import numpy as np
 import torch
 import torch.onnx
 import torch.nn as nn
 import torch.nn.functional as F
+
 from torchvision import datasets, transforms, models
 from tqdm import tqdm
 from torchinfo import summary
-
 
 
 # Function to calculate top-1 and top-5 accuracy
@@ -71,23 +71,48 @@ def accuracy(output: torch.Tensor, target: torch.Tensor, topk=(1,)):
 def count_parameters(model):
   return sum(p.numel() for p in model.parameters() if p.requires_grad)
 
+# Function to get layer output sizes
+def get_tensor_dimensions_impl(model, layer, image_size, for_input=False):
+  t_dims = None
+  def _local_hook(_, _input, _output):
+    nonlocal t_dims
+    t_dims = _input[0].size() if for_input else _output.size()
+    return _output    
+  layer.register_forward_hook(_local_hook)
+  dummy_var = torch.zeros(1, 3, image_size, image_size).to(device)
+  model(dummy_var)
+  return t_dims
+
+
+# Print arguments and models
+print("Usage:")
+print("python imagenet-inference.py <input-size> <model> <to-onnx> <onnx-name> <model-summary> <activation-size> <accuracy> <speed> <write-parameters>")
+print("Example:")
+print("python imagenet-inference.py 224 squeezenet1_1 0 0 1 1 1 1 0")
+print("Currently the following models are supported:")
+print("squeezenet1_1, mobilenet_v2, shufflenet_v2_x1_0")
+if len(sys.argv) != 10:
+  print("Invalid usage.")
+  print("Program will terminate.")
+  exit()
 
 
 # Select GPU if available
 device = torch.device('cuda' if torch.cuda.is_available() else 'cpu')
 
+# Set the input size
+input_sz = int(sys.argv[1])
 
 
 # Input image pre-processing
-transform = transforms.Compose([             #[1]
-  transforms.Resize(256),                    #[2]
-  transforms.CenterCrop(224),                #[3]
-  transforms.ToTensor(),                     #[4]
-  transforms.Normalize(                      #[5]
-  mean=[0.485, 0.456, 0.406],                #[6]
-  std=[0.229, 0.224, 0.225]                  #[7]
+transform = transforms.Compose([  
+  transforms.Resize(256),         
+  transforms.CenterCrop(input_sz),
+  transforms.ToTensor(),          
+  transforms.Normalize(           
+  mean=[0.485, 0.456, 0.406],     
+  std=[0.229, 0.224, 0.225]       
   )])
-
 
 
 # Load the data
@@ -95,54 +120,59 @@ imagenet_val = datasets.ImageFolder('/mnt/terabyte/datasets/ImageNet/val/' , tra
 val_loader = torch.utils.data.DataLoader(imagenet_val, batch_size=1, shuffle=False)
 
 
-
 # Load the pretrained network
-model = models.shufflenet_v2_x1_0(pretrained=True)
+if sys.argv[2] == "squeezenet1_1":
+  model = models.squeezenet1_1(pretrained=True)
+elif sys.argv[2] == "mobilenet_v2":
+  model = models.mobilenet_v2(pretrained=True)
+elif sys.argv[2] == "shufflenet_v2_x1_0":
+  model = models.shufflenet_v2_x1_0(pretrained=True)
+else:
+  print("Invalid model selected.")
+  print("Program will terminate.")
+  exit()
 model.eval()
 model.to(device)
 
 
-
 # Convert to onnx format
-if 0:
-  dummy_input = torch.randn(1, 3, 224, 224)
+if sys.argv[3]:
+  output_name = sys.argv[4]
+  dummy_input = torch.randn(1, 3, input_sz, input_sz)
   dummy_input = dummy_input.to(device)
   input_names = [ "actual_input" ]
   output_names = [ "output" ]
   torch.onnx.export(model, 
     dummy_input,
-    "./onnx/shufflenet_v2_x1.onnx",
+    "./onnx/" + output_name,
     verbose=False,
     input_names=input_names,
     output_names=output_names,
     export_params=True)
 
 
-
 # Print model and its summary
-print(model)
-summary(model,
-  verbose=1,
-  depth=5,
-  input_size=(1,3,224,224),
-  col_names=["kernel_size", "input_size", "output_size", "num_params", "mult_adds"])
+if sys.argv[5]:
+  # print(model)
+  summary(model,
+    verbose=1,
+    depth=5,
+    input_size=(1,3,input_sz,input_sz),
+    col_names=["kernel_size", "input_size", "output_size", "num_params", "mult_adds"])
 
 
-
-# Print parameters
-# max_param_sz = 0
-# for name, param in model.named_parameters():
-#   if param.requires_grad:
-#     max_param_sz = max(max_param_sz, param.data.size)
-#     print(param.data.size())
-#     print(name, param.data)
-# print("Max parameter size:", max_param_sz)
-# print("Trainable parameters:", count_parameters(model))
-
+# Print total activation size
+if sys.argv[6]:
+  activation_sz = 0
+  for name, layer in model.named_modules():
+    #if isinstance(layer, torch.nn.Conv2d):
+    if not get_tensor_dimensions_impl(model, layer, input_sz)==None:
+      activation_sz += get_tensor_dimensions_impl(model, layer, input_sz).numel()
+  print("Activation size(M):", activation_sz/1000000)
 
 
 # Benchmark top-1 and top-5 accuracy
-if 0:
+if sys.argv[7]:
   correct1 = 0
   correct5 = 0
   total = len(imagenet_val)
@@ -156,10 +186,34 @@ if 0:
       # Forward pass
       x = images
       y = model(x)
+
       list = accuracy(y, labels, topk=(1,5))
       correct1 += float(list[0])
       correct5 += float(list[1])
-
-      
+   
   print('Top-1 accuracy: {}'.format(correct1/total))
   print('Top-5 accuracy: {}'.format(correct5/total))
+
+
+# Benchmark inference speed
+if sys.argv[8]:
+  correct = 0
+  with torch.no_grad():
+    # Iterate through test set minibatchs 
+    for images, labels in tqdm(val_loader):
+      images, labels = images.to(device), labels.to(device)
+
+      # Forward pass
+      x = images
+      y = model(x)
+      
+      predictions = torch.argmax(y, dim=1)
+      correct += torch.sum((predictions == labels).float())
+
+
+# Write parameters to file
+if sys.argv[9]:
+  for name, param in model.named_parameters():
+    if param.requires_grad:
+      print(param.data.size())
+      print(name, param.data)
