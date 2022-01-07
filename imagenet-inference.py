@@ -7,16 +7,56 @@ import torch.nn.functional as F
 
 import geffnet
 
+import cv2
+import numpy as np
+import PIL
+from PIL import Image
+
 from torchvision import datasets, transforms, models
 from tqdm import tqdm
 from torchinfo import summary
 from fvcore.nn.flop_count import flop_count
 from fvcore.nn.activation_count import activation_count
+from argparse import Namespace
 
-from peleenet import PeleeNet 
+sys.path.append('/mnt/terabyte/pmousoul_data/Repos/pytorch_files/peleenet')
+sys.path.append('/mnt/terabyte/pmousoul_data/Repos/pytorch_files/condensenet')
+sys.path.append('/mnt/terabyte/pmousoul_data/Repos/pytorch_files/shufflenetv2')
 
-#from efficientnet_lite_pytorch import EfficientNet
-#from efficientnet_lite0_pytorch_model import EfficientnetLite0ModelFile
+from peleenet import PeleeNet
+from condensenet_converted import CondenseNet
+from network import ShuffleNetV2
+
+
+class OpencvResize(object):
+
+  def __init__(self, size=256):
+    self.size = size
+
+  def __call__(self, img):
+    assert isinstance(img, PIL.Image.Image)
+    img = np.asarray(img) # (H,W,3) RGB
+    img = img[:,:,::-1] # 2 BGR
+    img = np.ascontiguousarray(img)
+    H, W, _ = img.shape
+    target_size = (int(self.size/H * W + 0.5), self.size) if H < W else (self.size, int(self.size/W * H + 0.5))
+    img = cv2.resize(img, target_size, interpolation=cv2.INTER_LINEAR)
+    img = img[:,:,::-1] # 2 RGB
+    img = np.ascontiguousarray(img)
+    img = Image.fromarray(img)
+    return img
+
+class ToBGRTensor(object):
+
+  def __call__(self, img):
+    assert isinstance(img, (np.ndarray, PIL.Image.Image))
+    if isinstance(img, PIL.Image.Image):
+        img = np.asarray(img)
+    img = img[:,:,::-1] # 2 BGR
+    img = np.transpose(img, [2, 0, 1]) # 2 (3, H, W)
+    img = np.ascontiguousarray(img)
+    img = torch.from_numpy(img).float()
+    return img
 
 
 # Function to calculate top-1 and top-5 accuracy
@@ -104,7 +144,7 @@ print("python imagenet-inference.py <input-size> <model> <to-onnx> <onnx-name> <
 print("Example:")
 print("python imagenet-inference.py 224 squeezenet1_1 0 0 1 1 1 0")
 print("Currently the following models are supported:")
-print("squeezenet1_1, mobilenet_v2, shufflenet_v2_x1_0, efficientnet-lite0 condensenet_8 peleenet")
+print("squeezenet1_1, mobilenet_v2, shufflenet_v2_x1_5, efficientnet-lite0 condensenet_8 peleenet")
 if len(sys.argv) != 9:
   print("Invalid usage.")
   print("Program will terminate.")
@@ -121,15 +161,21 @@ dummy_input = dummy_input.to(device)
 
 
 # Input image pre-processing
-transform = transforms.Compose([  
-  transforms.Resize(256),         
-  transforms.CenterCrop(input_sz),
-  transforms.ToTensor(),          
-  transforms.Normalize(           
-  mean=[0.485, 0.456, 0.406],     
-  std=[0.229, 0.224, 0.225]       
-  )])
-
+if not sys.argv[2] == "shufflenet_v2_x1_5":
+  transform = transforms.Compose([  
+    transforms.Resize(256),         
+    transforms.CenterCrop(input_sz),
+    transforms.ToTensor(),        
+    transforms.Normalize(           
+      mean=[0.485, 0.456, 0.406],     
+      std=[0.229, 0.224, 0.225]),
+  ])
+else:
+  transform = transforms.Compose([
+    OpencvResize(256),
+    transforms.CenterCrop(224),
+    ToBGRTensor(),
+  ])
 
 # Load the data
 imagenet_val = datasets.ImageFolder('/mnt/terabyte/datasets/ImageNet/val/' , transform=transform)
@@ -141,19 +187,25 @@ if sys.argv[2] == "squeezenet1_1":
   model = models.squeezenet1_1(pretrained=True)
 elif sys.argv[2] == "mobilenet_v2":
   model = models.mobilenet_v2(pretrained=True)
-elif sys.argv[2] == "shufflenet_v2_x1_0":
-  model = models.shufflenet_v2_x1_0(pretrained=True)
+elif sys.argv[2] == "shufflenet_v2_x1_5":
+  args = Namespace(n_class=1000, model_size='1.5x')
+  model = ShuffleNetV2(args)
+  model = torch.nn.DataParallel(model).cuda()
+  checkpoint = torch.load('./pretrained/ShuffleNetV2.1.5x.pth.tar')
+  model.load_state_dict(checkpoint['state_dict'])
 elif sys.argv[2] == "efficientnet-lite0":
   model = geffnet.create_model('efficientnet_lite0', pretrained=True)
-  #weights_path = EfficientnetLite0ModelFile.get_model_file_path()
-  #model = EfficientNet.from_pretrained('efficientnet-lite0', weights_path = weights_path )
 elif sys.argv[2] == "condensenet_8":
-  model = torch.load('./models/converted_condensenet_8.pth.tar')
+  args = Namespace(stages=[4, 6, 8, 10, 8], bottleneck=4, group_1x1=8, group_3x3=8, condense_factor=8, growth=[8, 16, 32, 64, 128], reduction=0.5, num_classes=1000)
+  model = CondenseNet(args)
+  model = torch.nn.DataParallel(model).cuda()
+  checkpoint = torch.load('./pretrained/converted_condensenet_8.pth.tar')
+  model.load_state_dict(checkpoint['state_dict'])
 elif sys.argv[2] == "peleenet":
   model = PeleeNet(num_classes=1000)
   model = torch.nn.DataParallel(model).cuda()
-  checkpoint = torch.load('./models/peleenet_acc7208.pth.tar')
-  model.load_state_dict(checkpoint['state_dict'], strict=False)
+  checkpoint = torch.load('./pretrained/peleenet_acc7208.pth.tar')
+  model.load_state_dict(checkpoint['state_dict'])
 else:
   print("Invalid model selected.")
   print("Program will terminate.")
