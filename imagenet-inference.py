@@ -26,6 +26,7 @@ sys.path.append('/mnt/terabyte/pmousoul_data/Repos/pytorch_files/shufflenetv2')
 from peleenet import PeleeNet
 from condensenet_converted import CondenseNet
 from network import ShuffleNetV2
+from pytorchcv.model_provider import get_model as ptcv_get_model
 
 
 class OpencvResize(object):
@@ -144,7 +145,7 @@ print("python imagenet-inference.py <input-size> <model> <to-onnx> <onnx-name> <
 print("Example:")
 print("python imagenet-inference.py 224 squeezenet1_1 0 0 1 1 1 0")
 print("Currently the following models are supported:")
-print("squeezenet1_1, mobilenet_v2, shufflenet_v2_x1_5, efficientnet-lite0 condensenet_8 peleenet")
+print("squeezenet1_1, condensenet_8, mobilenet_v2, squeezenext, peleenet, shufflenet_v2_x1_5, efficientnet-lite0")
 if len(sys.argv) != 9:
   print("Invalid usage.")
   print("Program will terminate.")
@@ -185,27 +186,36 @@ val_loader = torch.utils.data.DataLoader(imagenet_val, batch_size=1, shuffle=Fal
 # Load the pretrained network
 if sys.argv[2] == "squeezenet1_1":
   model = models.squeezenet1_1(pretrained=True)
-elif sys.argv[2] == "mobilenet_v2":
-  model = models.mobilenet_v2(pretrained=True)
-elif sys.argv[2] == "shufflenet_v2_x1_5":
-  args = Namespace(n_class=1000, model_size='1.5x')
-  model = ShuffleNetV2(args)
-  model = torch.nn.DataParallel(model).cuda()
-  checkpoint = torch.load('./pretrained/ShuffleNetV2.1.5x.pth.tar')
-  model.load_state_dict(checkpoint['state_dict'])
-elif sys.argv[2] == "efficientnet-lite0":
-  model = geffnet.create_model('efficientnet_lite0', pretrained=True)
+
 elif sys.argv[2] == "condensenet_8":
   args = Namespace(stages=[4, 6, 8, 10, 8], bottleneck=4, group_1x1=8, group_3x3=8, condense_factor=8, growth=[8, 16, 32, 64, 128], reduction=0.5, num_classes=1000)
   model = CondenseNet(args)
   model = torch.nn.DataParallel(model).cuda()
   checkpoint = torch.load('./pretrained/converted_condensenet_8.pth.tar')
   model.load_state_dict(checkpoint['state_dict'])
+
+elif sys.argv[2] == "mobilenet_v2":
+  model = models.mobilenet_v2(pretrained=True)
+
+elif sys.argv[2] == "squeezenext":
+  model = ptcv_get_model("sqnxt23v5_w2", pretrained=True)
+
 elif sys.argv[2] == "peleenet":
   model = PeleeNet(num_classes=1000)
   model = torch.nn.DataParallel(model).cuda()
   checkpoint = torch.load('./pretrained/peleenet_acc7208.pth.tar')
   model.load_state_dict(checkpoint['state_dict'])
+
+elif sys.argv[2] == "shufflenet_v2_x1_5":
+  args = Namespace(n_class=1000, model_size='1.5x')
+  model = ShuffleNetV2(args)
+  model = torch.nn.DataParallel(model).cuda()
+  checkpoint = torch.load('./pretrained/ShuffleNetV2.1.5x.pth.tar')
+  model.load_state_dict(checkpoint['state_dict'])
+
+elif sys.argv[2] == "efficientnet-lite0":
+  model = geffnet.create_model('efficientnet_lite0', pretrained=True)
+
 else:
   print("Invalid model selected.")
   print("Program will terminate.")
