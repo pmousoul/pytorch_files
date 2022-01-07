@@ -5,9 +5,18 @@ import torch.onnx
 import torch.nn as nn
 import torch.nn.functional as F
 
+import geffnet
+
 from torchvision import datasets, transforms, models
 from tqdm import tqdm
 from torchinfo import summary
+from fvcore.nn.flop_count import flop_count
+from fvcore.nn.activation_count import activation_count
+
+from peleenet import PeleeNet 
+
+#from efficientnet_lite_pytorch import EfficientNet
+#from efficientnet_lite0_pytorch_model import EfficientnetLite0ModelFile
 
 
 # Function to calculate top-1 and top-5 accuracy
@@ -68,8 +77,13 @@ def accuracy(output: torch.Tensor, target: torch.Tensor, topk=(1,)):
       return list_topk_accs  # list of topk accuracies for entire batch [topk1, topk2, ... etc]
 
 # Function to count trainable parameters function
-def count_parameters(model):
-  return sum(p.numel() for p in model.parameters() if p.requires_grad)
+def params_count(model):
+    """
+    Compute the number of parameters.
+    Args:
+        model (model): model to count the number of parameters.
+    """
+    return np.sum([p.numel() for p in model.parameters()]).item()
 
 # Function to get layer output sizes
 def get_tensor_dimensions_impl(model, layer, image_size, for_input=False):
@@ -90,7 +104,7 @@ print("python imagenet-inference.py <input-size> <model> <to-onnx> <onnx-name> <
 print("Example:")
 print("python imagenet-inference.py 224 squeezenet1_1 0 0 1 1 1 0")
 print("Currently the following models are supported:")
-print("squeezenet1_1, mobilenet_v2, shufflenet_v2_x1_0")
+print("squeezenet1_1, mobilenet_v2, shufflenet_v2_x1_0, efficientnet-lite0 condensenet_8 peleenet")
 if len(sys.argv) != 9:
   print("Invalid usage.")
   print("Program will terminate.")
@@ -100,8 +114,10 @@ if len(sys.argv) != 9:
 # Select GPU if available
 device = torch.device('cuda' if torch.cuda.is_available() else 'cpu')
 
-# Set the input size
+# Set the input
 input_sz = int(sys.argv[1])
+dummy_input = torch.randn(1, 3, input_sz, input_sz)
+dummy_input = dummy_input.to(device)
 
 
 # Input image pre-processing
@@ -127,6 +143,17 @@ elif sys.argv[2] == "mobilenet_v2":
   model = models.mobilenet_v2(pretrained=True)
 elif sys.argv[2] == "shufflenet_v2_x1_0":
   model = models.shufflenet_v2_x1_0(pretrained=True)
+elif sys.argv[2] == "efficientnet-lite0":
+  model = geffnet.create_model('efficientnet_lite0', pretrained=True)
+  #weights_path = EfficientnetLite0ModelFile.get_model_file_path()
+  #model = EfficientNet.from_pretrained('efficientnet-lite0', weights_path = weights_path )
+elif sys.argv[2] == "condensenet_8":
+  model = torch.load('./models/converted_condensenet_8.pth.tar')
+elif sys.argv[2] == "peleenet":
+  model = PeleeNet(num_classes=1000)
+  model = torch.nn.DataParallel(model).cuda()
+  checkpoint = torch.load('./models/peleenet_acc7208.pth.tar')
+  model.load_state_dict(checkpoint['state_dict'], strict=False)
 else:
   print("Invalid model selected.")
   print("Program will terminate.")
@@ -138,8 +165,6 @@ model.to(device)
 # Convert to onnx format
 if int(sys.argv[3]):
   output_name = sys.argv[4]
-  dummy_input = torch.randn(1, 3, input_sz, input_sz)
-  dummy_input = dummy_input.to(device)
   input_names = [ "actual_input" ]
   output_names = [ "output" ]
   torch.onnx.export(model, 
@@ -156,9 +181,17 @@ if int(sys.argv[5]):
   # print(model)
   summary(model,
     verbose=1,
-    depth=5,
+    depth=7,
     input_size=(1,3,input_sz,input_sz),
     col_names=["kernel_size", "input_size", "output_size", "num_params", "mult_adds"])
+  print("FB: Trainable parameters(M):", params_count(model)/(10**6))
+  gflop_dict, _ = flop_count(model, dummy_input)
+  gflops = sum(gflop_dict.values())
+  print("FB: MACC count(M):", gflops*1000)
+  activation_dict, _ = activation_count(model, dummy_input)
+  activation = sum(activation_dict.values())
+  print("FB: Activation count(M):", activation)
+
 
 
 # Print total activation size
@@ -168,7 +201,7 @@ if int(sys.argv[6]):
     #if isinstance(layer, torch.nn.Conv2d):
     if not get_tensor_dimensions_impl(model, layer, input_sz)==None:
       activation_sz += get_tensor_dimensions_impl(model, layer, input_sz).numel()
-  print("Activation size(M):", activation_sz/1000000)
+  print("TOTAL: Activation size(M):", activation_sz/1000000)
 
 
 # Benchmark top-1 and top-5 accuracy
