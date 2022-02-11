@@ -229,9 +229,10 @@ if int(sys.argv[3]):
   output_name = sys.argv[4]
   input_names = [ "actual_input" ]
   output_names = [ "output" ]
-  torch.onnx.export(model, 
+  torch.onnx.export(model.module,  # use of 'model.module' instead of 'model' because of the 'torch.nn.DataParallel(model)' above
     dummy_input,
     "./onnx/" + output_name,
+    opset_version=9,
     verbose=False,
     input_names=input_names,
     output_names=output_names,
