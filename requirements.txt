@@ -1,0 +1,9 @@
+geffnet
+opencv python
+opencv-python
+tqdm
+torchinfo
+fvcore
+pytorchcv
+onnx
+onnxruntime

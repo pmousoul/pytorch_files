@@ -295,4 +295,4 @@ if int(sys.argv[8]):
   for name, param in model.named_parameters():
     if param.requires_grad:
       print(param.data.size())
-      print(name, param.data)
+#     print(name, param.data)
